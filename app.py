@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+# generate JWT token for login and authentication
 @app.post("/token")
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
@@ -42,33 +43,58 @@ async def login_for_access_token(
     return Token(access_token=access_token, token_type="bearer")
 
 
+# response with a generic message at the root
 @app.get("/")
 async def index():
     return {"msg": "Hello, World!"}
 
 
+# get the current user's information
 @app.get("/users/me", response_model=User)
 async def get_user(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
 
 
-@app.get("/comments")
-async def get_user_comments(
-    current_user: Annotated[User, Depends(get_current_active_user)]
+# create a new user
+@app.post("/users")
+async def create_user(user: UserInfo):
+    try:
+        cursor = cnx.cursor()
+        cursor.execute(
+            "INSERT INTO user(username, dob, password) VALUES (%s, %s, %s)",
+            (user.username, user.dob, hash_password(user.password)),
+        )
+        cnx.commit()
+        return {"msg": "User created successfully!"}
+    except sql.Error as err:
+        print(f"Failed inserting user: {err}")
+        raise HTTPException(status_code=409, detail="Username already taken!")
+
+
+# update the user information for the current logged in user
+@app.put("/users/me")
+async def update_current_user(
+    current_user: Annotated[User, Depends(get_current_active_user)], user_info: UserInfo
 ):
     cursor = cnx.cursor()
     cursor.execute(
-        f"SELECT username, comment, title FROM user U JOIN comment C ON U.user_id=C.user_id JOIN post P ON C.post_id=P.post_id WHERE U.username={current_user.username}"
+        "UPDATE user SET dob=%s, password=%s WHERE username=%s",
+        (user_info.dob, hash_password(user_info.password), current_user.username),
     )
-    username = current_user.username
-    comments = []
-    for username, comment, title in cursor:
-        comments.append({"comment": comment, "on": title})
-    if not comments:
-        return {"msg": "No comments yet!"}
-    return {"username": username, "comments": comments}
+    cnx.commit()
+    return {"msg": "User updated."}
 
 
+# delete the current logged in user
+@app.delete("/users/me")
+async def delete_user(current_user: Annotated[User, Depends(get_current_active_user)]):
+    cursor = cnx.cursor()
+    cursor.execute(f"DELETE FROM user WHERE username={current_user.username}")
+    cnx.commit()
+    return {"msg": "User deleted."}
+
+
+# get the current user's posts
 @app.get("/posts")
 async def get_user_posts(
     current_user: Annotated[User, Depends(get_current_active_user)]
@@ -86,42 +112,7 @@ async def get_user_posts(
     return {"username": current_user.username, "posts": posts}
 
 
-@app.post("/users")
-async def create_user(user: UserInfo):
-    try:
-        cursor = cnx.cursor()
-        cursor.execute(
-            "INSERT INTO user(username, dob, password) VALUES (%s, %s, %s)",
-            (user.username, user.dob, hash_password(user.password)),
-        )
-        cnx.commit()
-        return {"msg": "User created successfully!"}
-    except sql.Error as err:
-        print(f"Failed inserting user: {err}")
-        raise HTTPException(status_code=409, detail="Username already taken!")
-
-
-@app.put("/users/me")
-async def update_current_user(
-    current_user: Annotated[User, Depends(get_current_active_user)], user_info: UserInfo
-):
-    cursor = cnx.cursor()
-    cursor.execute(
-        "UPDATE user SET dob=%s, password=%s WHERE username=%s",
-        (user_info.dob, hash_password(user_info.password), current_user.username),
-    )
-    cnx.commit()
-    return {"msg": "User updated."}
-
-
-@app.delete("/users/me")
-async def delete_user(current_user: Annotated[User, Depends(get_current_active_user)]):
-    cursor = cnx.cursor()
-    cursor.execute(f"DELETE FROM user WHERE username={current_user.username}")
-    cnx.commit()
-    return {"msg": "User deleted."}
-
-
+# get the comments on a particular post
 @app.get("/posts/{post_id}/comments")
 async def get_post_comments(post_id: int):
     cursor = cnx.cursor()
@@ -145,6 +136,7 @@ async def get_post_comments(post_id: int):
     }
 
 
+# create a post as the current logged in user
 @app.post("/posts")
 async def create_post(
     current_user: Annotated[User, Depends(get_current_active_user)], post: Post
@@ -162,6 +154,7 @@ async def create_post(
         raise HTTPException(status_code=409, detail="Failed to create post!")
 
 
+# update the information for a post by the current logged in user
 @app.put("/posts/{post_id}")
 async def update_post(
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -185,6 +178,7 @@ async def update_post(
     return {"msg": f"Post updated by {current_user.username}."}
 
 
+# delete a post by the current logged in user
 @app.delete("/posts/{post_id}")
 async def delete_post(
     current_user: Annotated[User, Depends(get_current_active_user)], post_id: int
@@ -202,13 +196,37 @@ async def delete_post(
     return {"msg": "Post deleted."}
 
 
-@app.get("/comments/{comment_id}")
-async def get_comments(comment_id: int):
+# get all the comments by the current logged in user
+@app.get("/comments")
+async def get_user_comments(
+    current_user: Annotated[User, Depends(get_current_active_user)]
+):
     cursor = cnx.cursor()
-    cursor.execute(f"SELECT COUNT(*) FROM comment WHERE comment_id={comment_id}")
+    cursor.execute(
+        f"SELECT username, comment, title FROM user U JOIN comment C ON U.user_id=C.user_id JOIN post P ON C.post_id=P.post_id WHERE U.username={current_user.username}"
+    )
+    username = current_user.username
+    comments = []
+    for username, comment, title in cursor:
+        comments.append({"comment": comment, "on": title})
+    if not comments:
+        return {"msg": "No comments yet!"}
+    return {"username": username, "comments": comments}
+
+
+# get the information of a particular comment
+@app.get("/comments/{comment_id}")
+async def get_comments(
+    current_user: Annotated[User, Depends(get_current_active_user)], comment_id: int
+):
+    cursor = cnx.cursor()
+    cursor.execute(
+        f"SELECT COUNT(*) FROM comment NATURAL JOIN user WHERE comment_id=%s AND username=%s",
+        (comment_id, current_user.username),
+    )
     for (count,) in cursor:
         if count < 1:
-            raise HTTPException(status_code=404, detail="Post not found!")
+            raise HTTPException(status_code=404, detail="Comment not found!")
     cursor.execute(
         "SELECT username, commented_on, comment "
         f"FROM comment NATURAL JOIN post NATURAL JOIN user WHERE comment_id={comment_id}"
@@ -217,7 +235,8 @@ async def get_comments(comment_id: int):
         return {"username": username, "commented_on": commented_on, "comment": comment}
 
 
-@app.post("/posts/{post_id}/comments")
+# create a comment on a post as the current logged in user
+@app.post("/posts/{post_id}/comment")
 async def create_post_comment(
     current_user: Annotated[User, Depends(get_current_active_user)],
     post_id: int,
@@ -238,6 +257,7 @@ async def create_post_comment(
     return {"msg": "comment created successfully!"}
 
 
+# update the comment on a post by the current logged in user
 @app.put("/comment/{comment_id}")
 async def update_comment(
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -260,6 +280,7 @@ async def update_comment(
     return {"msg": "Comment updated."}
 
 
+# delete a comment by the current logged in user
 @app.delete("/comment/{comment_id}")
 async def delete_comment(
     current_user: Annotated[User, Depends(get_current_active_user)], comment_id: int
